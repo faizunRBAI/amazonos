@@ -37,7 +37,7 @@
 
     - name: Synchronise application source - app package
       ansible.builtin.copy:
-        src: app/
+        src: "{{ playbook_dir }}/../app/"
         dest: "{{ app_dir }}/app/"
         owner: "{{ app_user }}"
         group: "{{ app_group }}"
@@ -46,7 +46,7 @@
 
     - name: Synchronise application source - main.py
       ansible.builtin.copy:
-        src: main.py
+        src: "{{ playbook_dir }}/../main.py"
         dest: "{{ app_dir }}/main.py"
         owner: "{{ app_user }}"
         group: "{{ app_group }}"
@@ -54,7 +54,7 @@
 
     - name: Synchronise requirements.txt (if present)
       ansible.builtin.copy:
-        src: requirements.txt
+        src: "{{ playbook_dir }}/../requirements.txt"
         dest: "{{ app_dir }}/requirements.txt"
         owner: "{{ app_user }}"
         group: "{{ app_group }}"
@@ -63,14 +63,14 @@
 
     - name: Check if public/ directory exists locally
       ansible.builtin.stat:
-        path: public/
+        path: "{{ playbook_dir }}/../public/"
       delegate_to: localhost
       become: false
       register: public_dir_stat
 
     - name: Synchronise public/ static assets (if present)
       ansible.builtin.copy:
-        src: public/
+        src: "{{ playbook_dir }}/../public/"
         dest: "{{ app_dir }}/public/"
         owner: "{{ app_user }}"
         group: "{{ app_group }}"
