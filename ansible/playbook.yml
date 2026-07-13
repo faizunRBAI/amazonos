@@ -1,0 +1,222 @@
+---
+- name: Configure Python FastAPI application server
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    app_dir: /opt/app
+    venv_dir: /opt/app/.venv
+    app_user: ubuntu
+    app_group: ubuntu
+    service_name: app
+    gunicorn_bind: "127.0.0.1:8000"
+    gunicorn_workers: 4
+
+  tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Install system packages
+      ansible.builtin.apt:
+        name:
+          - python3.11
+          - python3.11-venv
+          - python3.11-dev
+          - python3-pip
+          - nginx
+          - git
+          - curl
+        state: present
+
+    - name: Create application directory
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: "0755"
+
+    - name: Synchronise application source - app package
+      ansible.builtin.copy:
+        src: app/
+        dest: "{{ app_dir }}/app/"
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: "0644"
+        directory_mode: "0755"
+
+    - name: Synchronise application source - main.py
+      ansible.builtin.copy:
+        src: main.py
+        dest: "{{ app_dir }}/main.py"
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: "0644"
+
+    - name: Synchronise requirements.txt (if present)
+      ansible.builtin.copy:
+        src: requirements.txt
+        dest: "{{ app_dir }}/requirements.txt"
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: "0644"
+      ignore_errors: true
+
+    - name: Check if public/ directory exists locally
+      ansible.builtin.stat:
+        path: public/
+      delegate_to: localhost
+      become: false
+      register: public_dir_stat
+
+    - name: Synchronise public/ static assets (if present)
+      ansible.builtin.copy:
+        src: public/
+        dest: "{{ app_dir }}/public/"
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: "0644"
+        directory_mode: "0755"
+      when: public_dir_stat.stat.exists
+
+    - name: Create Python virtual environment
+      ansible.builtin.command:
+        cmd: python3.11 -m venv {{ venv_dir }}
+        creates: "{{ venv_dir }}/bin/activate"
+      become_user: "{{ app_user }}"
+
+    - name: Upgrade pip inside virtualenv
+      ansible.builtin.pip:
+        name: pip
+        state: latest
+        virtualenv: "{{ venv_dir }}"
+        virtualenv_python: python3.11
+
+    - name: Install application dependencies
+      ansible.builtin.pip:
+        requirements: "{{ app_dir }}/requirements.txt"
+        virtualenv: "{{ venv_dir }}"
+        virtualenv_python: python3.11
+      notify: Restart app service
+
+    - name: Install gunicorn and uvicorn in virtualenv
+      ansible.builtin.pip:
+        name:
+          - gunicorn
+          - uvicorn[standard]
+        virtualenv: "{{ venv_dir }}"
+        virtualenv_python: python3.11
+
+    - name: Write systemd service unit for the application
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/{{ service_name }}.service
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=FastAPI application ({{ service_name }})
+          After=network.target
+          Wants=network.target
+
+          [Service]
+          Type=simple
+          User={{ app_user }}
+          Group={{ app_group }}
+          WorkingDirectory={{ app_dir }}
+          Environment=PATH={{ venv_dir }}/bin:/usr/local/bin:/usr/bin:/bin
+          Environment=APP_ENV=production
+          ExecStart={{ venv_dir }}/bin/gunicorn app.main:app \
+            -k uvicorn.workers.UvicornWorker \
+            -w {{ gunicorn_workers }} \
+            -b {{ gunicorn_bind }} \
+            --timeout 120 \
+            --access-logfile - \
+            --error-logfile -
+          Restart=on-failure
+          RestartSec=5s
+          StandardOutput=journal
+          StandardError=journal
+          SyslogIdentifier={{ service_name }}
+
+          [Install]
+          WantedBy=multi-user.target
+      notify: Restart app service
+
+    - name: Reload systemd daemon
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Enable and start application service
+      ansible.builtin.systemd:
+        name: "{{ service_name }}"
+        enabled: true
+        state: started
+
+    - name: Write nginx virtual host configuration
+      ansible.builtin.copy:
+        dest: /etc/nginx/sites-available/app
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          server {
+              listen 80 default_server;
+              listen [::]:80 default_server;
+              server_name _;
+
+              location / {
+                  proxy_pass         http://127.0.0.1:8000;
+                  proxy_http_version 1.1;
+                  proxy_set_header   Upgrade $http_upgrade;
+                  proxy_set_header   Connection keep-alive;
+                  proxy_set_header   Host $host;
+                  proxy_set_header   X-Real-IP $remote_addr;
+                  proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header   X-Forwarded-Proto $scheme;
+                  proxy_cache_bypass $http_upgrade;
+                  proxy_read_timeout 120s;
+                  proxy_connect_timeout 10s;
+              }
+          }
+      notify: Reload nginx
+
+    - name: Enable nginx site
+      ansible.builtin.file:
+        src: /etc/nginx/sites-available/app
+        dest: /etc/nginx/sites-enabled/app
+        state: link
+      notify: Reload nginx
+
+    - name: Remove default nginx site
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: Reload nginx
+
+    - name: Enable and start nginx
+      ansible.builtin.systemd:
+        name: nginx
+        enabled: true
+        state: started
+
+    - name: Verify application service is running
+      ansible.builtin.systemd:
+        name: "{{ service_name }}"
+      register: app_service_status
+      failed_when: app_service_status.status.ActiveState != "active"
+
+  handlers:
+    - name: Restart app service
+      ansible.builtin.systemd:
+        name: "{{ service_name }}"
+        state: restarted
+        daemon_reload: true
+
+    - name: Reload nginx
+      ansible.builtin.systemd:
+        name: nginx
+        state: reloaded
