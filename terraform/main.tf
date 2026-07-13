@@ -29,13 +29,13 @@ provider "aws" {
   }
 }
 
-data "aws_ami" "ubuntu" {
+data "aws_ami" "amazon_linux" {
   most_recent = true
-  owners      = ["099720109477"]
+  owners      = ["amazon"]
 
   filter {
     name   = "name"
-    values = ["ubuntu/images/hvm-ssd*/ubuntu-*-24.04-amd64-server-*"]
+    values = ["al2023-ami-2023.*-x86_64"]
   }
 
   filter {
@@ -139,7 +139,7 @@ resource "aws_key_pair" "app" {
 }
 
 resource "aws_instance" "app" {
-  ami                    = data.aws_ami.ubuntu.id
+  ami                    = data.aws_ami.amazon_linux.id
   instance_type          = var.instance_type
   subnet_id              = aws_subnet.public.id
   vpc_security_group_ids = [aws_security_group.app.id]
