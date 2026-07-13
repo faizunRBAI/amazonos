@@ -22,9 +22,10 @@
           - python3-devel
           - nginx
           - git
-          - curl
+          - curl-minimal
         state: present
         update_cache: true
+        allowerasing: true
 
     - name: Create application directory
       ansible.builtin.file:
